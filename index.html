@@ -150,28 +150,31 @@
         <div class="flex justify-between items-center border-b border-slate-800 pb-4">
           <div>
             <h2 class="text-2xl font-bold text-white">Admin Management Portal</h2>
-            <p class="text-slate-400 text-sm">Pusat kendali proyek, portfolio, layanan, dan kontrak client.</p>
+            <p class="text-slate-400 text-sm">Pusat kendali proyek, portfolio, layanan, transaksi, dan kontrak client.</p>
           </div>
         </div>
 
         <!-- ADMIN TABS -->
-        <div class="flex border-b border-slate-800 gap-4">
-          <button onclick="switchAdminTab('overview')" id="tab-overview" class="admin-tab-btn border-b-2 border-indigo-500 text-indigo-400 pb-2 px-1 font-medium text-sm">
+        <div class="flex border-b border-slate-800 gap-4 overflow-x-auto">
+          <button onclick="switchAdminTab('overview')" id="tab-overview" class="admin-tab-btn border-b-2 border-indigo-500 text-indigo-400 pb-2 px-1 font-medium text-sm whitespace-nowrap">
             Metrics & Overview
           </button>
-          <button onclick="switchAdminTab('requests')" id="tab-requests" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm">
+          <button onclick="switchAdminTab('requests')" id="tab-requests" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm whitespace-nowrap">
             Project Requests
           </button>
-          <button onclick="switchAdminTab('portfolio')" id="tab-portfolio" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm">
+          <button onclick="switchAdminTab('payments')" id="tab-payments" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm whitespace-nowrap">
+            Payment Transactions
+          </button>
+          <button onclick="switchAdminTab('portfolio')" id="tab-portfolio" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm whitespace-nowrap">
             Manage Portfolio
           </button>
-          <button onclick="switchAdminTab('services')" id="tab-services" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm">
+          <button onclick="switchAdminTab('services')" id="tab-services" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm whitespace-nowrap">
             Manage Services
           </button>
-          <button onclick="switchAdminTab('contracts')" id="tab-contracts" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm">
+          <button onclick="switchAdminTab('contracts')" id="tab-contracts" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm whitespace-nowrap">
             Contracts & Orders
           </button>
-          <button onclick="switchAdminTab('clients')" id="tab-clients" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm">
+          <button onclick="switchAdminTab('clients')" id="tab-clients" class="admin-tab-btn border-b-2 border-transparent text-slate-400 hover:text-white pb-2 px-1 font-medium text-sm whitespace-nowrap">
             Client Directory
           </button>
         </div>
@@ -201,6 +204,12 @@
         <!-- TAB CONTENT: PROJECT REQUESTS -->
         <div id="admin-sec-requests" class="hidden space-y-4">
           <div id="admin-requests-list" class="space-y-4"></div>
+        </div>
+
+        <!-- TAB CONTENT: PAYMENT TRANSACTIONS -->
+        <div id="admin-sec-payments" class="hidden space-y-4">
+          <h3 class="font-bold text-lg text-white">Riwayat Transaksi Pembayaran</h3>
+          <div id="admin-payments-list" class="space-y-3"></div>
         </div>
 
         <!-- TAB CONTENT: MANAGE PORTFOLIO -->
@@ -259,8 +268,8 @@
             <input type="text" id="req-title" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white text-sm" />
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-400 mb-1">ESTIMASI BUDGET</label>
-            <input type="text" id="req-budget" required placeholder="Rp 10.000.000" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white text-sm" />
+            <label class="block text-xs font-semibold text-slate-400 mb-1">ESTIMASI BUDGET (NUMERIK)</label>
+            <input type="number" id="req-budget" required placeholder="10000000" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white text-sm" />
           </div>
           <div>
             <label class="block text-xs font-semibold text-slate-400 mb-1">DESKRIPSI KEBUTUHAN</label>
@@ -269,6 +278,53 @@
           <div class="flex justify-end gap-2 pt-2">
             <button type="button" onclick="closeRequestModal()" class="px-4 py-2 bg-slate-700 text-slate-300 text-sm font-medium rounded-lg">Batal</button>
             <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg">Kirim Request</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- MODAL: PAYMENT GATEWAY -->
+    <div id="payment-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-md w-full p-6 space-y-4">
+        <div class="flex justify-between items-center border-b border-slate-700 pb-3">
+          <div>
+            <h3 class="text-lg font-bold text-white">Pembayaran Proyek</h3>
+            <p id="pay-modal-subtitle" class="text-xs text-slate-400">Proyek ID: -</p>
+          </div>
+          <button onclick="closePaymentModal()" class="text-slate-400 hover:text-white">
+            <i data-lucide="x" class="w-5 h-5"></i>
+          </button>
+        </div>
+
+        <form onsubmit="processPayment(event)" class="space-y-4">
+          <input type="hidden" id="pay-project-id" />
+          
+          <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-700 space-y-1">
+            <p class="text-xs text-slate-400">Total Tagihan Pembayaran:</p>
+            <p id="pay-modal-amount" class="text-2xl font-extrabold text-indigo-400">Rp 0</p>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">METODE PEMBAYARAN</label>
+            <select id="pay-method" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500">
+              <option value="qris">QRIS (All E-Wallet / Mobile Banking)</option>
+              <option value="bca_va">BCA Virtual Account</option>
+              <option value="mandiri_va">Mandiri Virtual Account</option>
+              <option value="credit_card">Kartu Kredit / Debit</option>
+              <option value="bank_transfer">Transfer Manual Bank Direct</option>
+            </select>
+          </div>
+
+          <div class="text-xs text-slate-400 bg-indigo-900/20 border border-indigo-500/20 p-3 rounded-lg flex gap-2 items-start">
+            <i data-lucide="shield-check" class="w-4 h-4 text-indigo-400 shrink-0 mt-0.5"></i>
+            <span>Sistem pembayaran diproses secara aman. Status pembayaran akan otomatis terupdate.</span>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" onclick="closePaymentModal()" class="px-4 py-2 bg-slate-700 text-slate-300 text-sm font-medium rounded-lg">Batal</button>
+            <button type="submit" id="pay-btn-submit" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-lg flex items-center gap-1">
+              <i data-lucide="credit-card" class="w-4 h-4"></i> Bayar Sekarang
+            </button>
           </div>
         </form>
       </div>
@@ -578,21 +634,41 @@
           container.innerHTML = `<div class="bg-slate-800/30 border border-slate-700/30 p-8 rounded-xl text-center text-slate-500">Belum ada pengajuan proyek.</div>`;
           return;
         }
-        container.innerHTML = data.map((req) => `
-          <div class="bg-slate-800/50 border border-slate-700/50 rounded-xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-            <div class="space-y-1">
-              <div class="flex items-center gap-2">
-                <h4 class="font-bold text-white text-lg">${req.title}</h4>
-                <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${getBadgeColor(req.status)}">${req.status}</span>
+        container.innerHTML = data.map((req) => {
+          const rawBudget = Number(req.budget) || 0;
+          const displayBudget = rawBudget > 0 ? `Rp ${rawBudget.toLocaleString("id-ID")}` : req.budget;
+          const paymentStatus = req.payment_status || "Unpaid";
+
+          return `
+            <div class="bg-slate-800/50 border border-slate-700/50 rounded-xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div class="space-y-1">
+                <div class="flex items-center gap-2">
+                  <h4 class="font-bold text-white text-lg">${req.title}</h4>
+                  <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${getBadgeColor(req.status)}">${req.status}</span>
+                  <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${paymentStatus === 'Paid' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
+                    ${paymentStatus}
+                  </span>
+                </div>
+                <p class="text-slate-400 text-sm">${req.description}</p>
+                <p class="text-xs text-indigo-400 font-medium">Budget: ${displayBudget}</p>
               </div>
-              <p class="text-slate-400 text-sm">${req.description}</p>
-              <p class="text-xs text-indigo-400 font-medium">Budget: ${req.budget}</p>
+              <div class="flex items-center gap-2">
+                ${paymentStatus !== 'Paid' ? `
+                  <button onclick="openPaymentModal('${req.id}', ${rawBudget})" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg flex items-center gap-1.5 shadow-lg shadow-emerald-600/20">
+                    <i data-lucide="credit-card" class="w-4 h-4"></i> Bayar
+                  </button>
+                ` : `
+                  <span class="px-3 py-1.5 bg-slate-900 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-semibold flex items-center gap-1">
+                    <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i> Lunas
+                  </span>
+                `}
+                <button onclick="openChatModal('${req.id}', '${req.title}', '${req.status}')" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg flex items-center gap-2">
+                  <i data-lucide="message-square" class="w-4 h-4"></i> Live Chat
+                </button>
+              </div>
             </div>
-            <button onclick="openChatModal('${req.id}', '${req.title}', '${req.status}')" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg flex items-center gap-2">
-              <i data-lucide="message-square" class="w-4 h-4"></i> Live Chat
-            </button>
-          </div>
-        `).join("");
+          `;
+        }).join("");
         lucide.createIcons();
       }
 
@@ -625,6 +701,7 @@
             budget: document.getElementById("req-budget").value,
             description: document.getElementById("req-desc").value,
             status: "Pending",
+            payment_status: "Unpaid"
           },
         ]).select().single();
 
@@ -637,11 +714,67 @@
         }
       }
 
+      // PAYMENT GATEWAY MODAL & LOGIC
+      function openPaymentModal(projectId, amount) {
+        document.getElementById("pay-project-id").value = projectId;
+        document.getElementById("pay-modal-subtitle").innerText = `Proyek ID: ${projectId}`;
+        document.getElementById("pay-modal-amount").innerText = `Rp ${Number(amount).toLocaleString("id-ID")}`;
+        document.getElementById("payment-modal").classList.remove("hidden");
+      }
+
+      function closePaymentModal() {
+        document.getElementById("payment-modal").classList.add("hidden");
+      }
+
+      async function processPayment(e) {
+        e.preventDefault();
+        const projectId = document.getElementById("pay-project-id").value;
+        const method = document.getElementById("pay-method").value;
+        const btn = document.getElementById("pay-btn-submit");
+
+        btn.disabled = true;
+        btn.innerText = "Proses Pembayaran...";
+
+        try {
+          // 1. Simpan record transaksi ke tabel payments
+          const { data: payment, error: payError } = await db.from("payments").insert([
+            {
+              project_id: projectId,
+              client_id: currentUser.id,
+              payment_method: method,
+              status: "Paid",
+              created_at: new Date().toISOString()
+            }
+          ]).select().single();
+
+          if (payError) throw payError;
+
+          // 2. Update status pembayaran di tabel project_requests
+          const { error: updateError } = await db.from("project_requests")
+            .update({ payment_status: "Paid" })
+            .eq("id", projectId);
+
+          if (updateError) throw updateError;
+
+          await logActivity("PAYMENT_SUCCESS", "payments", payment?.id, { project_id: projectId, method: method });
+
+          alert("Pembayaran Berhasil Diproses!");
+          closePaymentModal();
+          loadClientDashboard();
+        } catch (err) {
+          alert("Gagal memproses pembayaran: " + err.message);
+        } finally {
+          btn.disabled = false;
+          btn.innerText = "Bayar Sekarang";
+        }
+      }
+
       // ADMIN PORTAL & TABS
       async function loadAdminDashboard() {
         if (!currentUser || currentProfile?.role !== "admin") return navigate("home");
         loadAdminMetrics();
         loadAdminRequests();
+        loadAdminPayments();
         loadAdminPortfolio();
         loadAdminServices();
         loadAdminContracts();
@@ -649,7 +782,7 @@
       }
 
       function switchAdminTab(tabName) {
-        const tabs = ["overview", "requests", "portfolio", "services", "contracts", "clients"];
+        const tabs = ["overview", "requests", "payments", "portfolio", "services", "contracts", "clients"];
         tabs.forEach((t) => {
           document.getElementById(`admin-sec-${t}`)?.classList.add("hidden");
           const btn = document.getElementById(`tab-${t}`);
@@ -687,6 +820,9 @@
               <div class="flex items-center gap-2">
                 <h4 class="font-bold text-white text-lg">${req.title}</h4>
                 <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${getBadgeColor(req.status)}">${req.status}</span>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${req.payment_status === 'Paid' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
+                  ${req.payment_status || 'Unpaid'}
+                </span>
               </div>
               <p class="text-xs text-slate-400">Client: <span class="text-slate-200 font-medium">${req.client_name}</span> | Budget: <span class="text-indigo-400">${req.budget}</span></p>
               <p class="text-slate-300 text-sm mt-1">${req.description}</p>
@@ -704,6 +840,26 @@
           </div>
         `).join("");
         lucide.createIcons();
+      }
+
+      async function loadAdminPayments() {
+        const { data } = await db.from("payments").select("*").order("created_at", { ascending: false });
+        const container = document.getElementById("admin-payments-list");
+        if (!data || data.length === 0) {
+          container.innerHTML = `<p class="text-slate-500 text-sm">Belum ada transaksi pembayaran.</p>`;
+          return;
+        }
+        container.innerHTML = data.map((p) => `
+          <div class="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4 flex justify-between items-center">
+            <div>
+              <p class="text-white text-sm font-semibold">Proyek ID: ${p.project_id}</p>
+              <p class="text-xs text-slate-400">Metode: <span class="uppercase font-medium text-indigo-400">${p.payment_method}</span> | User ID: ${p.client_id}</p>
+            </div>
+            <span class="px-2.5 py-1 text-xs rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
+              ${p.status}
+            </span>
+          </div>
+        `).join("");
       }
 
       async function updateStatus(id, newStatus) {
