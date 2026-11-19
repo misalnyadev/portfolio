@@ -341,7 +341,7 @@ const FUNCS = {text:'Susun teks (bible/naskah)', vision:'Analisis foto (vision)'
 const CREDIT_NOTE = {gemini:'Kuota Google AI Studio', groq:'Kuota gratis Groq', openrouter:'Kuota free router OpenRouter', mistral:'Kuota gratis Mistral', huggingface:'Kredit inferensi Hugging Face', pollinations:'Gratis, tanpa kredit', puter:'Puter user-pays (gratis utk pengguna)', kie:'Kredit berbayar Kie.ai per gambar'};
 
 function loadJSON(k, d){ try{ return JSON.parse(localStorage.getItem(k)) ?? d; }catch(e){ return d; } }
-function saveJSON(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){ console.error(e); } }
+function saveJSON(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){ console.error(e); } try{ cfgTouched(k); }catch(e){} }
 let settings = loadJSON('cf_settings', {});
 function getCfg(id){ const s = settings[id] || {}; return {...PROVIDERS[id], ...s, keys: KEYREG.filter(e=>e.provider===id && e.status!=='off').map(e=>e.key)}; }
 function setCfg(id, patch){ settings[id] = {...(settings[id]||{}), ...patch}; saveJSON('cf_settings', settings); }
@@ -1230,7 +1230,7 @@ async function callPuterTTS(text){
 }
 function extractPath(obj, path){ return (path||'').split('.').reduce((o,k)=> (o && k) ? o[k] : o, obj); }
 async function kieUpload(key, dataUrl){
-  const res = await fetch('https://kieai.redpandaai.co/api/file-base64-upload', {method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key}, body: JSON.stringify({base64Data:dataUrl, uploadPath:'images/base64', fileName:'ref-'+Date.now()+'.jpg'})});
+  const res = await fetch('https://kieai.redpandaai.co/api/file-base64-upload', {method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key}, body: JSON.stringify({base64Data:dataUrl, uploadPath:'images/base64', fileName:'ref-'+Date.now()+'.'+((String(dataUrl).match(/^data:video\/(\w+)/)||[])[1]==='quicktime'?'mov':((String(dataUrl).match(/^data:video\/(\w+)/)||[])[1]||'jpg'))})});
   if(!res.ok) throw new Error('Upload Kie.ai HTTP '+res.status+' — '+(await res.text()).slice(0,160));
   const d = await res.json().catch(()=>({}));
   const u = d.data?.downloadUrl || d.data?.fileUrl || d.data?.url || d.downloadUrl || d.url;
@@ -1421,7 +1421,7 @@ function idbOpen(){
 let _dbp = null;
 function getDb(){ if(!_dbp) _dbp = idbOpen(); return _dbp; }
 function reqp(req){ return new Promise((res,rej)=>{ req.onsuccess=()=>res(req.result); req.onerror=()=>rej(req.error); }); }
-async function idbPut(store, value){ const d = await getDb(); const t = d.transaction([store],'readwrite'); const r = t.objectStore(store).put(value); await reqp(r); return value; }
+async function idbPut(store, value){ const d = await getDb(); const t = d.transaction([store],'readwrite'); const r = t.objectStore(store).put(value); await reqp(r); if(store==='drafts' && value && value.id==='user-profile'){ try{ cfgTouched('profile'); }catch(e){} } return value; }
 async function idbGet(store, key){ const d = await getDb(); const t = d.transaction([store]); return reqp(t.objectStore(store).get(key)); }
 async function idbGetAll(store){ const d = await getDb(); const t = d.transaction([store]); return reqp(t.objectStore(store).getAll()); }
 async function idbDelete(store, key){ const d = await getDb(); const t = d.transaction([store],'readwrite'); await reqp(t.objectStore(store).delete(key)); }
@@ -2747,6 +2747,45 @@ async function fcCheck(id){
   }catch(err){ await jobUpdate(job.id, {status:'fail', finishedAt:Date.now(), error:String(err.message||err)}); throw err; }
 }
 function fcChip(m){ const q = m && m.qc; return q ? `<span class="fcchip" style="background:${fcTone(q.score)}" title="${escHtml(fcLabel(q.score)+(q.issues&&q.issues.length?': '+q.issues.join('; '):''))}">${q.score}</span>` : ''; }
+/* alat foto lewat Kie: perjelas (Topaz) & hapus latar (Recraft). Hasil jadi aset baru, aslinya tetap utuh. */
+async function photoTool(id, tool, btn, opt){
+  opt = opt||{};
+  const old = btn ? btn.textContent : ''; if(btn){ btn.disabled = true; btn.textContent = 'Memproses...'; }
+  try{
+    const rec = await idbGet('assets', id); if(!rec) throw new Error('Aset tidak ditemukan.'); const m = rec.meta||{};
+    const blob = await (await fetch(await getAssetURL(id))).blob(), du = await blobToDataURL(blob);
+    const out = await withKeyRotation('kie', async (key, c)=>{ const u = await kieUpload(key, du);
+      if(tool==='bg') return callKieJob(c, key, 'recraft/remove-background', {image:u});
+      if(tool==='rf') return callKieJob(c, key, 'ideogram/v3-reframe', {image_url:u, image_size:opt.size||'portrait_16_9', rendering_speed:'BALANCED', num_images:'1'});
+      if(tool==='tryon'){ const g = await kieUpload(key, opt.garment); return callKieJob(c, key, c.editModel||'google/nano-banana-edit', {prompt:'Virtual try-on. Image 1 is the person, image 2 is the garment. Dress the person from image 1 in the garment from image 2. Keep her face, hair, skin tone, body, pose, background and lighting EXACTLY the same as image 1; only change the outfit, with natural fit, folds and shadows. Photorealistic.', image_urls:[u,g], input_urls:[u,g], output_format:'png', image_size:'auto'}); }
+      return callKieJob(c, key, 'topaz/image-upscale', {image_url:u, upscale_factor: tool==='up4' ? '4' : '2'}); });
+    const nm = {bg:'tanpa latar', up2:'diperjelas 2x', up4:'diperjelas 4x', rf:'rasio diperluas', tryon:'ganti outfit'}[tool];
+    const nid = await putAsset(out, Object.assign({}, m, {type:'studio_image', title:(m.title||'Foto')+' ('+nm+')', kind:'edited', sourceAssetIds:[id], status:'draft', portfolio:false, homePublic:false, portfolioAt:undefined, homePublicAt:undefined}));
+    notify('Alat foto selesai', (m.title||'Foto')+' ('+nm+') masuk ke Asset', {type:'ok', view:'v-list'});
+    return nid;
+  }catch(err){ notify('Alat foto gagal', String(err.message||err).slice(0,200), {type:'err'}); return null; }
+  finally{ if(btn){ btn.disabled = false; btn.textContent = old; } }
+}
+const VTOOLS = {
+  motion:{label:'Motion control', hint:'Foto karakter yang digerakkan mengikuti gerakan video ini', pick:'image/*', nm:'gerakan dipindah'},
+  replace:{label:'Ganti pemeran', hint:'Foto pemeran baru untuk menggantikan orang di video ini', pick:'image/*', nm:'pemeran diganti'},
+  lipsync:{label:'Dubbing / lip-sync', hint:'File suara baru (mp3/wav) agar bibir mengikuti', pick:'audio/*', nm:'dubbing'}
+};
+async function videoTool(id, tool, btn, extra){
+  const old = btn ? btn.textContent : ''; if(btn){ btn.disabled = true; btn.textContent = 'Memproses...'; }
+  try{
+    const rec = await idbGet('assets', id); if(!rec) throw new Error('Aset tidak ditemukan.'); const m = rec.meta||{};
+    const vu = await blobToDataURL(rec.blob);
+    const out = await withKeyRotation('kie', async (key, c)=>{ const v = await kieUpload(key, vu), x = await kieUpload(key, extra);
+      if(tool==='motion') return callKieJob(c, key, 'kling-3.0/motion-control', {input_urls:[x], video_urls:[v], mode:'720p', character_orientation:'video'}, null, 900000);
+      if(tool==='replace') return callKieJob(c, key, 'wan/2-2-animate-replace', {video_url:v, image_url:x, resolution:'720p'}, null, 900000);
+      return callKieJob(c, key, 'volcengine/video-to-video-lip-sync', {mode:'lite', video_url:v, audio_url:x}, null, 900000); });
+    const nid = await putAsset(out, Object.assign({}, m, {type:'studio_video', title:(m.title||'Video')+' ('+VTOOLS[tool].nm+')', kind:'edited', sourceAssetIds:[id], status:'draft', portfolio:false, homePublic:false, portfolioAt:undefined, homePublicAt:undefined}));
+    notify('Alat video selesai', (m.title||'Video')+' ('+VTOOLS[tool].nm+') masuk ke Asset', {type:'ok', view:'v-list'});
+    return nid;
+  }catch(err){ notify('Alat video gagal', String(err.message||err).slice(0,200), {type:'err'}); return null; }
+  finally{ if(btn){ btn.disabled = false; btn.textContent = old; } }
+}
 async function showAssetDetail(id){
   const rec = await idbGet('assets', id); if(!rec) return;
   const prjList = await prjAll();
@@ -2771,7 +2810,7 @@ async function showAssetDetail(id){
     <details style="margin-top:10px"><summary class="small" style="cursor:pointer">Prompt &amp; konteks pembuatan</summary><pre class="log" style="white-space:pre-wrap;max-height:200px">${escHtml(m.prompt||'(impor — tidak ada prompt)')}</pre></details>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
       <button class="primary" id="dSave">Simpan</button><button id="dAI">Tulis Caption (AI)</button><button id="dCopy">Salin Caption + Hashtag</button>
-      <button id="dDl">Unduh</button><button id="dPack">Paket Posting</button><button id="dPf">${m.portfolio?'★ Keluarkan dari Portfolio':'☆ Masukkan ke Portfolio'}</button><button id="dHm">${m.homePublic?'◉ Tarik dari Beranda':'○ Tampilkan di Beranda'}</button><button id="dEd">Kirim ke Editor</button><button id="dDel" style="margin-left:auto">Hapus</button>
+      <button id="dDl">Unduh</button><button id="dPack">Paket Posting</button><button id="dPf">${m.portfolio?'★ Keluarkan dari Portfolio':'☆ Masukkan ke Portfolio'}</button><button id="dHm">${m.homePublic?'◉ Tarik dari Beranda':'○ Tampilkan di Beranda'}</button><button id="dEd">Kirim ke Editor</button>${isVid?'':'<button id="dUp2" title="Perjelas foto 2x (Topaz)">Perjelas 2x</button><button id="dUp4" title="Perjelas foto 4x (Topaz)">4x</button><button id="dTry" title="Ganti pakaian dengan foto pakaian (try-on)">Ganti outfit</button><input type="file" accept="image/*" id="dTryF" style="display:none"><select id="dRfS" style="width:auto" title="Rasio tujuan"><option value="portrait_16_9">9:16</option><option value="landscape_16_9">16:9</option><option value="square_hd">1:1</option><option value="portrait_4_3">3:4</option><option value="landscape_4_3">4:3</option></select><button id="dRf" title="Perluas gambar ke rasio lain (Ideogram)">Perluas rasio</button><button id="dBg" title="Hapus latar belakang (Recraft)">Hapus latar</button>'}${isVid?Object.keys(VTOOLS).map(k=>`<button data-vt="${k}" title="${VTOOLS[k].hint}">${VTOOLS[k].label}</button>`).join('')+'<input type="file" id="dVtF" style="display:none">':''}<button id="dDel" style="margin-left:auto">Hapus</button>
     </div><div class="small mono" id="dMsg" style="margin-top:8px"></div></div>`;
   document.body.appendChild(bg);
   const $ = (s)=>bg.querySelector(s); const close = ()=>{ bg.remove(); if(document.getElementById('v-list').classList.contains('on')) renderList(); if(document.getElementById('v-portfolio').classList.contains('on')) renderPortfolio(); };
@@ -2788,7 +2827,17 @@ async function showAssetDetail(id){
   $('#dDl').onclick = ()=> downloadAssetById(id, ((m.title||'konten').replace(/[^a-z0-9]+/gi,'_'))+(isVid?(/mp4/.test(rec.mime||'')?'.mp4':'.webm'):'.png'));
   $('#dHm').onclick = async ()=>{ const r = await idbGet('assets', id); await assetUpdateMeta(id, Object.assign(gather(),{homePublic:!r.meta.homePublic, homePublicAt:Date.now()})); close(); };
   $('#dPf').onclick = async ()=>{ const r = await idbGet('assets', id); await assetUpdateMeta(id, Object.assign(gather(),{portfolio:!r.meta.portfolio, portfolioAt:Date.now()})); close(); };
+  { const vf = $('#dVtF'); let vtk = null;
+    bg.querySelectorAll('[data-vt]').forEach(b=> b.onclick = ()=>{ vtk = b; vf.accept = VTOOLS[b.dataset.vt].pick; vf.value = ''; vf.click(); });
+    if(vf) vf.onchange = async ()=>{ const fl = vf.files[0]; if(!fl || !vtk) return; const b = vtk; const du = await new Promise(r=>{ const fr = new FileReader(); fr.onload = ()=>r(fr.result); fr.readAsDataURL(fl); }); const nid = await videoTool(id, b.dataset.vt, b, du); if(nid){ close(); showAssetDetail(nid); } };
+  }
   $('#dEd').onclick = async ()=>{ await editorAdd(id); close(); setActiveView('v-export'); };
+  { const rf = $('#dRf'), tb = $('#dTry'), tf = $('#dTryF');
+    if(rf) rf.onclick = async ()=>{ const nid = await photoTool(id, 'rf', rf, {size:$('#dRfS').value}); if(nid){ close(); showAssetDetail(nid); } };
+    if(tb) tb.onclick = ()=>tf.click();
+    if(tf) tf.onchange = async ()=>{ const fl = tf.files[0]; if(!fl) return; const du = await new Promise(r=>{ const fr = new FileReader(); fr.onload = ()=>r(fr.result); fr.readAsDataURL(fl); }); const nid = await photoTool(id, 'tryon', tb, {garment:du}); if(nid){ close(); showAssetDetail(nid); } };
+  }
+  [['dUp2','up2'],['dUp4','up4'],['dBg','bg']].forEach(([bid,tool])=>{ const b = $('#'+bid); if(b) b.onclick = async ()=>{ const nid = await photoTool(id, tool, b); if(nid){ close(); showAssetDetail(nid); } }; });
   $('#dDel').onclick = async ()=>{ if(confirm('Hapus konten ini?')){ await idbDelete('assets', id); close(); } };
   $('#dAI').onclick = async ()=>{
     const b = $('#dAI'); b.disabled = true; b.textContent = 'Menulis...';
@@ -2945,18 +2994,30 @@ const MOTION_PRESETS = [
   {l:'Menyeruput kopi', t:'karakter mengangkat cangkir, menyeruput kopi, lalu tersenyum ke kamera'},
   {l:'Melambai & menyapa', t:'karakter melambaikan tangan dan menyapa ke kamera dengan ekspresi ceria'},
 ];
-const studioState = {projectId:null, sbId:null, sbPending:null, charId:null, mode:'photo', srcId:null, planRef:null, planNiche:'', planGoal:'Engagement', planPlat:'Instagram', planN:7, planItems:null, planBusy:false, script:'', topic:'', talkDur:'10', voiceNote:'', textProv:genDefault('text'), prodId:null, prodName:'', usp:'', aud:'', tpl:0, ar:'3:4', n:1, dur:'5', sound:true, scene:'', pose:'', outfit:'', mood:'', motion:'', busy:false};
+const studioState = {cam:{}, projectId:null, sbId:null, sbPending:null, charId:null, mode:'photo', srcId:null, planRef:null, planNiche:'', planGoal:'Engagement', planPlat:'Instagram', planN:7, planItems:null, planBusy:false, script:'', topic:'', talkDur:'10', voiceNote:'', textProv:genDefault('text'), prodId:null, prodName:'', usp:'', aud:'', tpl:0, ar:'3:4', n:1, dur:'5', sound:true, scene:'', pose:'', outfit:'', mood:'', motion:'', busy:false};
 
 function charIdentity(c){
   const b=c.basic||{}, t=c.traits||{};
   return `${b.name||'karakter'}, ${b.gender||''} usia ${b.age||'-'}, ${b.eth||''}; wajah ${t.faceShape||'-'}, kulit ${t.skin||'-'}, mata ${t.eyes||'-'}, alis ${t.eyebrows||'-'}, hidung ${t.nose||'-'}, bibir ${t.lips||'-'}, rambut ${t.hair||'-'}, tubuh ${t.bodyType||'-'}, ciri khas ${t.mark||'-'}`;
 }
+/* ---------- Kamera sinematik: pilihan kamera/lensa/focal/aperture -> kalimat prompt (terinspirasi Cinema Studio Open-Generative-AI) ---------- */
+const CAM_OPTS = {
+  camera:['Kamera', [['Modular 8K digital cinema camera','Digital 8K modular'],['Full-frame cine digital camera','Full-frame cine'],['Grand format 70mm film camera','Film 70mm'],['Studio digital S35 camera','Studio S35'],['Classic 16mm film camera with visible film grain','Film 16mm klasik'],['Premium large format digital camera','Large format digital']]],
+  lens:['Lensa', [['compact anamorphic lens with horizontal flares','Anamorphic kompak'],['classic anamorphic lens','Anamorphic klasik'],['70s cinema prime lens, soft vintage rendering','Prime sinema 70-an'],['premium modern prime lens, clean and sharp','Prime modern premium'],['warm cinema prime lens','Prime sinema hangat'],['swirl bokeh portrait lens','Portret swirl bokeh'],['vintage prime lens with gentle halation','Vintage prime'],['halation diffusion filter, glowing highlights','Difusi halation'],['extreme macro lens','Makro ekstrem'],['clinical sharp prime lens','Prime tajam klinis']]],
+  focal:['Focal length', [['8mm ultra-wide perspective','8mm ultra-lebar'],['14mm wide perspective','14mm lebar'],['24mm wide-angle','24mm'],['35mm, natural human-eye perspective','35mm (mata manusia)'],['50mm portrait perspective','50mm potret'],['85mm tight portrait compression','85mm potret rapat']]],
+  aperture:['Aperture', [['f/1.4 aperture, very shallow depth of field','f/1.4 (blur tebal)'],['f/4 aperture, balanced depth of field','f/4 (seimbang)'],['f/11 aperture, deep focus, everything sharp','f/11 (tajam semua)']]],
+  move:['Gerakan kamera', [['static locked-off camera','Diam (tripod)'],['slow push-in dolly','Dolly maju pelan'],['slow pull-out dolly','Dolly mundur pelan'],['smooth tracking shot following the subject','Tracking ikut subjek'],['slow orbit around the subject','Orbit mengelilingi'],['subtle handheld camera movement','Handheld halus'],['smooth gimbal walk-and-talk','Gimbal berjalan'],['aerial drone shot','Drone udara'],['slow tilt up','Tilt ke atas']]]
+};
+function camPrompt(cam){ cam = cam||{}; const p = []; for(const k of ['camera','lens','focal','aperture','move']){ if(cam[k]) p.push(cam[k]); } return p.length ? 'Cinematic camera setup: '+p.join(', ')+'.' : ''; }
+function camHtml(cam, keys){ cam = cam||{}; keys = keys||['camera','lens','focal','aperture']; const any = keys.some(k=>cam[k]);
+  return `<details class="camd" ${any?'open':''} style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--text2)">Kamera sinematik (opsional)${any?' — aktif':''}</summary><div class="row2" style="margin-top:4px">${keys.map(k=>`<div><label>${CAM_OPTS[k][0].toUpperCase()}</label><select data-cam="${k}"><option value="">Otomatis</option>${CAM_OPTS[k][1].map(o=>`<option value="${escHtml(o[0])}" ${cam[k]===o[0]?'selected':''}>${o[1]}</option>`).join('')}</select></div>`).join('')}</div></details>`; }
+function camBind(root, cam, onChange){ root.querySelectorAll('select[data-cam]').forEach(sl=> sl.onchange = ()=>{ cam[sl.dataset.cam] = sl.value; const sm = sl.closest('details').querySelector('summary'); sm.textContent = 'Kamera sinematik (opsional)'+(Object.values(cam).some(Boolean)?' — aktif':''); if(onChange) onChange(); }); }
 function studioPhotoPrompt(c, i, n, o){
   const b=c.basic||{}, t=c.traits||{}, s=Object.assign({}, studioState, o||{});
   return `Foto realistis gaya Instagram. Karakter harus SAMA PERSIS dengan orang pada gambar referensi (wajah, warna kulit, rambut, ciri khas, proporsi tubuh) — jangan berubah menjadi orang lain. Identitas: ${charIdentity(c)}.
 
 Adegan: ${s.scene||'-'}. Aktivitas/pose: ${s.pose||'-'}. Outfit: ${s.outfit||t.outfit||'-'}. Suasana & cahaya: ${s.mood||'-'}.
-${String(b.photoDirection||'Gaya fotografi estetika Instagram. Kamera: iPhone 17 Pro, 1x, f/2, RAW.').replace(/[.\s]+$/,'')}. Kulit autentik dengan pori-pori terlihat, tanpa efek plastik atau beauty filter berlebihan. Rasio gambar ${s.ar}.${n>1?` Variasi ${i} dari ${n}: ubah sedikit sudut kamera dan komposisi.`:''}
+${String(b.photoDirection||'Gaya fotografi estetika Instagram. Kamera: iPhone 17 Pro, 1x, f/2, RAW.').replace(/[.\s]+$/,'')}. Kulit autentik dengan pori-pori terlihat, tanpa efek plastik atau beauty filter berlebihan. Rasio gambar ${s.ar}.${s.cam&&Object.values(s.cam).some(Boolean)?' '+camPrompt(Object.assign({},s.cam,{move:''}))+' (setelan kamera ini menggantikan arahan kamera di atas)':''}${n>1?` Variasi ${i} dari ${n}: ubah sedikit sudut kamera dan komposisi.`:''}
 Hindari: jari tambahan, anatomi terdistorsi, wajah meleleh, watermark, teks.`;
 }
 function studioVideoPrompt(c, o){
@@ -3011,6 +3072,7 @@ async function renderStudio(){
       <div><label>SUASANA &amp; CAHAYA</label><textarea id="sMood" rows="2">${escHtml(s.mood)}</textarea></div></div>
       <div class="row2"><div><label>RASIO</label><select id="sAr">${['3:4','9:16','1:1','16:9'].map(r=>`<option ${r===s.ar?'selected':''}>${r}</option>`).join('')}</select></div>
       <div><label>JUMLAH VARIASI</label><select id="sN">${[1,2,3,4].map(r=>`<option ${r===s.n?'selected':''}>${r}</option>`).join('')}</select></div></div>
+      ${camHtml(s.cam)}
       <div style="margin-top:10px"><label>PROVIDER GAMBAR</label>${genSelectHtml('img2img','sImgProv',s.imgProv)}</div><div style="display:flex;gap:8px;margin-top:10px"><button class="primary" id="sGenPhoto" style="flex:1">Generate Foto</button><button id="sCopyPhoto">Salin Prompt</button></div>`;
   } else if(s.mode==='talk'){
     panel = `
@@ -3136,7 +3198,7 @@ async function renderStudio(){
   }
   if(s.mode==='photo'){
     bind('sScene','scene'); bind('sPose','pose'); bind('sOutfit','outfit'); bind('sMood','mood');
-    document.getElementById('sAr').onchange = (e)=>{ s.ar=e.target.value; };
+    document.getElementById('sAr').onchange = (e)=>{ s.ar=e.target.value; }; camBind(el, s.cam);
     document.getElementById('sN').onchange = (e)=>{ s.n=parseInt(e.target.value,10); };
     el.querySelectorAll('[data-scene]').forEach(x=> x.onclick = ()=>{ const p=SCENE_PRESETS[+x.dataset.scene]; s.scene=p.scene; s.pose=p.pose; s.mood=p.mood; document.getElementById('sScene').value=p.scene; document.getElementById('sPose').value=p.pose; document.getElementById('sMood').value=p.mood; });
     document.getElementById('sCopyPhoto').onclick = (e)=> copyText(studioPhotoPrompt(c,1,1)+'\n\n(Lampirkan foto wajah karakter sebagai referensi.)', e.currentTarget);
@@ -3327,6 +3389,18 @@ async function coreGenImage(c, prompt, refs, ar, meta){
     return id;
   }catch(err){ await jobUpdate(job.id,{status:'fail',finishedAt:Date.now(),error:String(err.message||err)}); throw err; }
 }
+const SEEDANCE_MODELS = [['','Sesuai Pengaturan'],['bytedance/seedance-2-5','Seedance 2.5 (suara bawaan, mode lanjut)'],['bytedance/seedance-2','Seedance 2']];
+async function seedanceInput(key, model, o){
+  const inp = {prompt:o.prompt, generate_audio:!!o.sound, duration:Math.max(4, Math.min(model.endsWith('-5')?30:15, +o.dur||5))};
+  const res = o.res==='1080p'?'1080p':(o.res==='360p'||o.res==='480p'?'480p':'720p'); inp.resolution = res;
+  if(o.extendSrc){
+    if(!model.endsWith('-5')) throw new Error('Mode lanjut hanya untuk Seedance 2.5.');
+    inp.reference_video_urls = [await kieUpload(key, o.extendSrc)]; inp.omni_reference_task_type = 'extend'; inp.aspect_ratio = 'adaptive';
+  } else {
+    inp.first_frame_url = await kieUpload(key, o.src); if(o.ar) inp.aspect_ratio = o.ar;
+  }
+  return inp;
+}
 async function runVideo(prov, o){
   const log = o.log || (()=>{}), entries = prov==='auto' ? chainOf('video') : [prov]; let lastErr;
   for(const ent of entries){
@@ -3334,9 +3408,11 @@ async function runVideo(prov, o){
     if(!isReady(id)){ log('Lewati '+nm+' (belum ada key aktif).'); continue; }
     try{
       if(id==='kie'){
-        const cfg = getCfg('kie'), model = m || cfg[o.modelKey] || PROVIDERS.kie[o.modelKey];
+        const cfg = getCfg('kie'), model = o.model || m || cfg[o.modelKey] || PROVIDERS.kie[o.modelKey];
         log('Mengirim ke Kie.ai ('+model+')...');
-        const blob = await withKeyRotation('kie', async (key)=>{ const u = await kieUpload(key, o.src); const inp = {prompt:o.prompt, image_urls:[u], input_urls:[u], sound:o.sound, duration:String(o.dur)}; if(o.ar){ inp.aspect_ratio = o.ar; } if(o.res){ inp.resolution = o.res; } return await callKieJob(cfg, key, model, inp, o.onTask, 600000); });
+        const blob = await withKeyRotation('kie', async (key)=>{
+          if(/^bytedance\/seedance/.test(model)) return await callKieJob(cfg, key, model, await seedanceInput(key, model, o), o.onTask, 900000);
+          const u = await kieUpload(key, o.src); const inp = {prompt:o.prompt, image_urls:[u], input_urls:[u], sound:o.sound, duration:String(o.dur)}; if(o.ar){ inp.aspect_ratio = o.ar; } if(o.res){ inp.resolution = o.res; } return await callKieJob(cfg, key, model, inp, o.onTask, 600000); });
         return {blob, used:'kie', model};
       }
       log('Mengirim ke '+nm+'...');
@@ -3797,6 +3873,23 @@ async function tlAutoText(){
   const each = total/parts.length; parts.forEach((txt,i)=>{ TL.clips.push({id:uid('clip'), track:tr.id, kind:'text', start:i*each, dur:Math.max(TL_MIN, each-0.05), text:txt, pos:'bottom', size:5.5, color:'#ffffff', bg:true, fadeIn:0.15, fadeOut:0.15, ox:0, oy:0}); });
   TL.sel = null; await tlAfter(); return parts.length;
 }
+/* cari highlight dengan Gemini: potong momen terbaik dari video terpilih menjadi klip baru */
+async function tlHighlights(){
+  const src = TL.clips.find(c=>c.id===TL.sel && c.kind==='video') || TL.clips.filter(c=>c.kind==='video').sort((a,b)=>a.start-b.start)[0];
+  if(!src) throw new Error('Tidak ada klip video di timeline.');
+  const rec = await idbGet('assets', src.assetId); if(!rec) throw new Error('Aset sumber tidak ditemukan.');
+  if(rec.blob.size > 18*1024*1024) throw new Error('Video terlalu besar untuk dianalisis ('+(rec.blob.size/1048576).toFixed(0)+' MB, maks 18 MB). Pakai video lebih pendek.');
+  if(!isReady('gemini')) throw new Error('Butuh API key Gemini aktif di Pengaturan.');
+  const du = await blobToDataURL(rec.blob);
+  const prompt = 'Watch this video and pick the 3 to 5 most engaging, highlight-worthy moments (strong action, emotion, key line, or visual payoff), each between 2 and 12 seconds, non-overlapping, in chronological order. Reply with ONLY a JSON array, no markdown: [{"start":seconds,"end":seconds,"reason":"short reason in Indonesian"}]. Times are seconds from the video start.';
+  const txt = await withKeyRotation('gemini', (key, cfg)=>callGeminiText(cfg, key, prompt, du));
+  let arr; try{ arr = JSON.parse((txt.match(/\[[\s\S]*\]/)||[])[0]); }catch(e){ throw new Error('Jawaban AI tidak bisa dibaca: '+String(txt).slice(0,120)); }
+  const d = src.srcDur||0; arr = (arr||[]).map(x=>({s:Math.max(0,+x.start), e:Math.min(d||1e9,+x.end), r:String(x.reason||'')})).filter(x=>isFinite(x.s) && isFinite(x.e) && x.e-x.s>=0.5);
+  if(!arr.length) throw new Error('AI tidak menemukan momen yang valid.');
+  const tr = tlMainTrack(); tlPush();
+  for(const h of arr){ const c = await tlMakeMedia(src.assetId, {track:tr.id}); c.in = h.s; c.dur = h.e-h.s; c.start = tlFindSlot(tr.id, tlTrackEnd(tr.id), c.dur, null); c.note = h.r; TL.clips.push(c); TL.sel = c.id; }
+  await tlAfter(); return arr;
+}
 /* gelombang audio */
 TL.thumbs = TL.thumbs||{};
 function tlThumbs(assetId, dur){
@@ -4083,7 +4176,7 @@ async function renderExport(){
     </div>
     <div class="card tlcard">
       <div class="tltools">
-        <button class="small" id="tAddV" title="Tambah video/gambar dari Asset">+ Media</button><button class="small" id="tAddT">+ Teks</button><button class="small" id="tAddS">+ Stiker</button><button class="small" id="tAutoT" title="Buat teks dari naskah/caption konten">Teks otomatis</button><button class="small" id="tAddA">+ Audio</button><input type="file" id="tAudioIn" accept="audio/*" style="display:none">
+        <button class="small" id="tAddV" title="Tambah video/gambar dari Asset">+ Media</button><button class="small" id="tAddT">+ Teks</button><button class="small" id="tAddS">+ Stiker</button><button class="small" id="tAutoT" title="Buat teks dari naskah/caption konten">Teks otomatis</button><button class="small" id="tHl" title="AI mencari momen terbaik dari video terpilih (Gemini)">Cari highlight</button><button class="small" id="tAddA">+ Audio</button><input type="file" id="tAudioIn" accept="audio/*" style="display:none">
         <span class="tlsep"></span>
         <button class="small" id="tSplit" title="Pecah di garis putih (S)">Pecah</button><button class="small" id="tDel" title="Hapus (Del)">Hapus</button><button class="small" id="tRip" title="Hapus & rapatkan (Shift+Del)">Hapus rapat</button><button class="small" id="tDup">Duplikat</button>
         <span class="tlsep"></span>
@@ -4108,6 +4201,7 @@ async function renderExport(){
   binEl.querySelectorAll('[data-rm]').forEach(b=>b.onclick = async ()=>{ q.assetIds = q.assetIds.filter(x=>x!==b.dataset.rm); await idbPut('drafts', q); renderExport(); });
   const $ = (id)=>document.getElementById(id);
   $('edPick').onclick = ()=>edPickAsset(); $('tAddV').onclick = ()=>edPickAsset();
+  $('tHl').onclick = async ()=>{ const b = $('tHl'), o = b.textContent; b.disabled = true; b.textContent = 'Menganalisis...'; try{ const a = await tlHighlights(); notify('Highlight ditemukan', a.length+' momen ditambahkan di akhir timeline.', {type:'ok'}); }catch(e){ notify('Cari highlight gagal', String(e.message||e).slice(0,200), {type:'err'}); } b.disabled = false; b.textContent = o; };
   $('tAddT').onclick = ()=>tlAddText(); $('tAddS').onclick = ()=>tlStickerPicker(); $('tAutoT').onclick = async ()=>{ const n = await tlAutoText(); if(!n) notify('Teks otomatis','Tidak ada naskah/caption pada klip pertama.',{type:'warn'}); }; $('tAddA').onclick = ()=>$('tAudioIn').click();
   $('tAudioIn').onchange = async (e)=>{ const f = e.target.files[0]; e.target.value = ''; if(f) await tlAddAudio(f); };
   $('tSplit').onclick = ()=>tlSplit(); $('tDel').onclick = ()=>tlDelete(false); $('tRip').onclick = ()=>tlDelete(true); $('tDup').onclick = ()=>tlDup();
@@ -5196,7 +5290,7 @@ const SB_STYLE = 'realistic UGC look, natural light, shot on smartphone, shallow
 /* ================= FILM: klip berkelanjutan + @mention karakter ================= */
 const FILM_GENRES = ['Action Humor','Aksi','Drama Romantis','Komedi','Horor','Thriller','Fantasi','Sci-Fi','Drama Keluarga','Dokumenter'];
 const FILM_STYLES = ['Hyper realistic','Sinematik film','Realistis natural','Animasi 3D','Anime','Retro 80-an'];
-function filmNew(o){ o = o||{}; return {id:'film-'+uid('f'), title:o.title||'Film baru', genre:'Action Humor', style:'Hyper realistic', ar:'9:16', res:'720p', dur:'10', projectId:null, clips:[filmClipNew()], createdAt:Date.now(), updatedAt:Date.now()}; }
+function filmNew(o){ o = o||{}; return {id:'film-'+uid('f'), title:o.title||'Film baru', genre:'Action Humor', style:'Hyper realistic', ar:'9:16', res:'720p', dur:'10', vmodel:'', cam:{}, projectId:null, clips:[filmClipNew()], createdAt:Date.now(), updatedAt:Date.now()}; }
 function filmClipNew(){ return {id:uid('cl'), prompt:'', startMode:'auto', startId:null, videoId:null, lastFrameId:null, castIds:[], model:'', at:0}; }
 async function filmSave(f){ f.updatedAt = Date.now(); await idbPut('drafts', f); }
 async function filmList(){ return (await idbGetAll('drafts')).filter(d=>/^film-/.test(d.id||'')).sort((a,b)=>b.updatedAt-a.updatedAt); }
@@ -5217,7 +5311,7 @@ function filmPrompt(f, i, chars, cast){
   const ids = cast.map(c=>'@'+filmFirstName(c)+' (entity reference): '+charIdentity(c)).join('\n');
   return `Cinematic ${f.genre} scene, ${f.style}, Clip ${i+1} of ${n}. ${i>0?'Starting exactly from the scene in the reference image (last frame of the previous clip), continuing the same location, lighting, costumes and action. ':'Opening shot of the film. '}Film title: "${f.title}".
 ${scene}
-${ids?'Characters — keep each face, hair, skin tone, body and outfit identical to their reference:\n'+ids+'\n':''}Aspect ratio ${f.ar}, ${f.dur} seconds, ${f.res}, ${f.style}, natural realistic motion, consistent characters, 8k quality. Audio: natural dialogue and ambient sound${i>0?', same background music as the previous clip':''}.`;
+${ids?'Characters — keep each face, hair, skin tone, body and outfit identical to their reference:\n'+ids+'\n':''}${camPrompt(f.cam)?camPrompt(f.cam)+' ':''}Aspect ratio ${f.ar}, ${f.dur} seconds, ${f.res}, ${f.style}, natural realistic motion, consistent characters, 8k quality. Audio: natural dialogue and ambient sound${i>0?', same background music as the previous clip':''}.`;
 }
 async function filmLastFrame(blob){
   const url = URL.createObjectURL(blob);
@@ -5255,12 +5349,28 @@ async function filmRunClip(f, i, chars, log){
   const job = await jobStart({provider: prov==='auto'?null:prov, type:'video', label:'Film: '+f.title+' · klip '+(i+1)});
   try{
     log('Membuat video klip '+(i+1)+' ('+f.dur+' dtk, '+f.res+', '+f.ar+')...');
-    const r = await runVideo(prov, {prompt:filmPrompt(f, i, chars, cast), src, dur:f.dur, sound:true, modelKey:'videoModel', ar:f.ar, res:f.res, onTask:(tid)=>jobUpdate(job.id,{taskId:tid}), log});
+    const r = await runVideo(prov, {prompt:filmPrompt(f, i, chars, cast), src, dur:f.dur, sound:true, modelKey:'videoModel', model:f.vmodel||undefined, ar:f.ar, res:f.res, onTask:(tid)=>jobUpdate(job.id,{taskId:tid}), log});
     const vid = await putAsset(r.blob, {type:'studio_video', characterId:cast[0].id, prompt:clip.prompt, title:f.title+' · Klip '+(i+1), caption:'', status:'draft', ar:f.ar, orient:(+f.ar.split(':')[0] > +f.ar.split(':')[1])?'h':'v', film:f.id, clipNo:i+1, projectId:f.projectId||null, sourceAssetId:startId});
     await jobUpdate(job.id,{status:'success',finishedAt:Date.now(),resultAssetIds:[vid],provider:r.used,model:r.model});
     let last = null; try{ const fb = await filmLastFrame(r.blob); last = await putAsset(fb, {type:'film_frame', title:f.title+' · frame akhir '+(i+1), film:f.id, clipNo:i+1}); }catch(e){ log('Frame akhir gagal diambil: '+e.message+' — klip berikutnya akan menyusun frame awal sendiri.'); }
     clip.videoId = vid; clip.lastFrameId = last; clip.castIds = cast.map(c=>c.id); clip.model = r.model||''; clip.at = Date.now();
     await filmSave(f);
+  }catch(err){ await jobUpdate(job.id,{status:'fail',finishedAt:Date.now(),error:String(err.message||err)}); throw err; }
+}
+async function filmExtendClip(f, i, chars, log, prompt){
+  const clip = f.clips[i]; if(!clip.videoId) throw new Error('Klip belum dibuat.');
+  const prov = studioState.vidProv || genDefault('video'); genNeed(prov);
+  const job = await jobStart({provider:'kie', type:'video', label:'Film: '+f.title+' · lanjutan klip '+(i+1)});
+  try{
+    log('Melanjutkan klip '+(i+1)+' dengan Seedance 2.5...');
+    const src = await getAssetDataUrl(clip.videoId);
+    const r = await runVideo('kie', {prompt, extendSrc:src, model:'bytedance/seedance-2-5', dur:f.dur, sound:true, modelKey:'videoModel', res:f.res, onTask:(tid)=>jobUpdate(job.id,{taskId:tid}), log});
+    const cast = (clip.castIds||[]).map(id=>chars.find(c=>c.id===id)).filter(Boolean), cid = (cast[0]||chars[0]||{}).id;
+    const vid = await putAsset(r.blob, {type:'studio_video', characterId:cid, prompt, title:f.title+' · Lanjutan klip '+(i+1), caption:'', status:'draft', ar:f.ar, orient:(+f.ar.split(':')[0] > +f.ar.split(':')[1])?'h':'v', film:f.id, clipNo:i+2, projectId:f.projectId||null});
+    await jobUpdate(job.id,{status:'success',finishedAt:Date.now(),resultAssetIds:[vid],provider:'kie',model:r.model});
+    let last = null; try{ const fb = await filmLastFrame(r.blob); last = await putAsset(fb, {type:'film_frame', title:f.title+' · frame akhir lanjutan', film:f.id, clipNo:i+2}); }catch(e){}
+    const nc = filmClipNew(); nc.prompt = prompt; nc.videoId = vid; nc.lastFrameId = last; nc.castIds = clip.castIds||[]; nc.model = r.model||''; nc.at = Date.now(); nc.startMode = 'auto';
+    f.clips.splice(i+1, 0, nc); await filmSave(f);
   }catch(err){ await jobUpdate(job.id,{status:'fail',finishedAt:Date.now(),error:String(err.message||err)}); throw err; }
 }
 async function renderFilm(el, chars){
@@ -5283,7 +5393,7 @@ async function renderFilm(el, chars){
       <div data-chips="${i}" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center">${mt.found.map(c=>`<span class="pill on" style="cursor:default">@${escHtml(filmFirstName(c))}</span>`).join('')||'<span class="small">Belum ada karakter disebut.</span>'}${warn}</div>
       <div class="small" style="margin-top:8px;color:var(--text3)">${escHtml(startNote)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px"><select data-cstart="${i}" style="width:auto"><option value="auto" ${cl.startMode==='auto'?'selected':''}>Frame awal: otomatis</option><option value="cast" ${cl.startMode==='cast'?'selected':''}>Susun ulang dari karakter</option><option value="asset" ${cl.startMode==='asset'?'selected':''}>Pakai gambar sendiri</option></select>${cl.startMode==='asset'?`<input type="file" accept="image/*" data-cfile="${i}" style="width:auto">`:''}${surl?`<img src="${surl}" style="height:46px;border-radius:6px" title="Frame awal terakhir dipakai">`:''}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="primary" data-cgen="${i}">${cl.videoId?'Buat Ulang Klip '+(i+1):'Generate Klip '+(i+1)}</button><button data-ccopy="${i}">Salin Prompt</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="primary" data-cgen="${i}">${cl.videoId?'Buat Ulang Klip '+(i+1):'Generate Klip '+(i+1)}</button><button data-ccopy="${i}">Salin Prompt</button>${cl.videoId?`<button data-cext="${i}">Lanjutkan klip (Seedance 2.5)</button>`:''}</div>
       ${cl.videoId?`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px;align-items:flex-start"><video controls src="${vurl}" style="max-height:300px;max-width:100%;border-radius:10px;background:#000"></video>${furl?`<div><img src="${furl}" style="height:120px;border-radius:8px;display:block"><div class="small" style="margin-top:4px">Frame akhir</div><a class="small" href="${furl}" download="frame-akhir-klip-${i+1}.jpg">Unduh frame</a></div>`:''}</div>`:''}
     </div>`);
   }
@@ -5291,7 +5401,9 @@ async function renderFilm(el, chars){
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><select id="fSel" style="flex:1 1 220px">${list.map(x=>`<option value="${x.id}" ${x.id===f.id?'selected':''}>${escHtml(x.title)}</option>`).join('')}</select><button id="fNew">+ Film baru</button><button id="fDel">Hapus film</button></div>
     <div class="row2"><div><label>JUDUL FILM</label><input id="fTitle" value="${escHtml(f.title)}"></div><div><label>PROJECT (opsional)</label><select id="fPrj"><option value="">Tanpa project</option>${prjOpts.map(p=>`<option value="${p.id}" ${p.id===f.projectId?'selected':''}>${escHtml(p.title)}</option>`).join('')}</select></div></div>
     <div class="row2"><div><label>GENRE</label>${sel('fGenre',FILM_GENRES,f.genre)}</div><div><label>GAYA VISUAL</label>${sel('fStyle',FILM_STYLES,f.style)}</div></div>
+    ${camHtml(f.cam=f.cam||{}, ['camera','lens','focal','aperture','move'])}
     <div class="row2" style="grid-template-columns:repeat(4,1fr)"><div><label>RASIO</label>${sel('fAr',['9:16','16:9'],f.ar)}</div><div><label>RESOLUSI</label>${sel('fRes',['360p','720p'],f.res)}</div><div><label>DURASI/KLIP (dtk)</label>${sel('fDur',['4','6','8','10'],f.dur)}</div><div><label>PROVIDER VIDEO</label>${genSelectHtml('video','fVid',studioState.vidProv,'vidProv')}</div></div>
+    <div style="margin-top:8px"><label>MODEL VIDEO KIE.AI (bila provider Kie)</label><select id="fVm">${SEEDANCE_MODELS.map(x=>`<option value="${x[0]}" ${x[0]===(f.vmodel||'')?'selected':''}>${x[1]}</option>`).join('')}</select></div>
     <div style="margin-top:8px"><label>PROVIDER GAMBAR (untuk menyusun frame awal)</label>${genSelectHtml('img2img','fImg',studioState.imgProv)}</div>
     <label>KARAKTER TERSIMPAN — ketik @nama di prompt (maks 3 per klip) atau klik untuk menyisipkan</label><div style="display:flex;gap:6px;flex-wrap:wrap">${roster||'<span class="small">Belum ada karakter.</span>'}</div></div>
     ${clipsHtml.join('')}
@@ -5304,7 +5416,7 @@ async function renderFilm(el, chars){
   document.getElementById('fNew').onclick = ()=>{ s.filmPending = true; renderFilm(el, chars); };
   document.getElementById('fDel').onclick = async ()=>{ if(!confirm('Hapus film ini? (video hasil di Asset tetap ada)')) return; await idbDelete('drafts', f.id); s.filmId = null; renderFilm(el, chars); };
   const bindF = (id, key, fn)=>{ const n = document.getElementById(id); n.onchange = n.oninput = ()=>{ f[key] = n.value; if(fn) fn(); save(); }; };
-  bindF('fTitle','title'); bindF('fGenre','genre'); bindF('fStyle','style'); bindF('fAr','ar'); bindF('fRes','res'); bindF('fDur','dur');
+  camBind(el, f.cam, save); bindF('fTitle','title'); bindF('fGenre','genre'); bindF('fStyle','style'); bindF('fAr','ar'); bindF('fRes','res'); bindF('fDur','dur'); bindF('fVm','vmodel');
   document.getElementById('fPrj').onchange = (e)=>{ f.projectId = e.target.value||null; save(); };
   let lastTa = null;
   const insertAt = (ta, txt)=>{ const p = ta.selectionStart||ta.value.length; ta.value = ta.value.slice(0,p)+txt+' '+ta.value.slice(ta.selectionEnd||p); ta.focus(); ta.dispatchEvent(new Event('input')); };
@@ -5327,6 +5439,13 @@ async function renderFilm(el, chars){
   el.querySelectorAll('[data-ccopy]').forEach(b=> b.onclick = ()=>{ const i = +b.dataset.ccopy; const cast = filmMentions(f.clips[i].prompt, chars).found; copyText(filmPrompt(f, i, chars, cast), b); });
   document.getElementById('fCopyAll').onclick = (ev)=>{ copyText(f.clips.map((c,i)=>'=== KLIP '+(i+1)+' ===\n'+filmPrompt(f, i, chars, filmMentions(c.prompt, chars).found)).join('\n\n'), ev.currentTarget); };
   document.getElementById('fEditor').onclick = async ()=>{ for(const c of f.clips){ if(c.videoId) await editorAdd(c.videoId); } setActiveView('v-export'); };
+  el.querySelectorAll('[data-cext]').forEach(b=> b.onclick = async ()=>{
+    const i = +b.dataset.cext; const pr = prompt('Apa yang terjadi selanjutnya? (prompt lanjutan)', 'Continue the scene naturally with the same characters, location and style.'); if(!pr) return;
+    if(!confirm('Lanjutan klip memakai Kie.ai Seedance 2.5 (memakai kredit). Lanjut?')) return;
+    el.querySelectorAll('button').forEach(x=>x.disabled = true); document.getElementById('sLog').textContent = '';
+    try{ await filmExtendClip(f, i, chars, log, pr); log('Selesai: lanjutan klip '+(i+1)+' ditambahkan sebagai klip '+(i+2)+'.'); }catch(err){ log('GAGAL: '+err.message); alert('Gagal: '+err.message); }
+    renderFilm(el, chars);
+  });
   el.querySelectorAll('[data-cgen]').forEach(b=> b.onclick = async ()=>{
     const i = +b.dataset.cgen; f.clips[i].prompt = el.querySelector('[data-cp="'+i+'"]').value; await save();
     if(!confirm('Klip '+(i+1)+' akan memanggil provider AI (bisa 1 panggilan gambar + 1 panggilan video, memakai kredit). Lanjut?')) return;
@@ -5754,7 +5873,7 @@ function pfEditProfile(profile){
   bg.querySelector('#fOk').onclick = async ()=>{ await idbPut('drafts', {id:'creator-profile', brand:bg.querySelector('#fB').value.trim(), tagline:bg.querySelector('#fT').value.trim(), about:bg.querySelector('#fA').value.trim(), contact:bg.querySelector('#fC').value.trim(), services:bg.querySelector('#fS').value, specialties:bg.querySelector('#fSp').value.trim(), availability:bg.querySelector('#fAv').value, turnaround:bg.querySelector('#fTa').value.trim(), revisions:bg.querySelector('#fRv').value.trim(), collabOpen:bg.querySelector('#fCo').checked, socials:bg.querySelector('#fSo').value, updatedAt:Date.now()}); bg.remove(); renderPortfolio(); };
 }
 
-const APP_VERSION = '2026.11.14-af', APP_BUILD = '13 Nov 2026';
+const APP_VERSION = '2026.11.19-ao', APP_BUILD = '13 Nov 2026';
 /* ================= 6. KOLABORASI ================= */
 const CB = {tab:'papan', open:null};
 const CB_ST = {tawaran:'Menunggu jawaban', berjalan:'Berjalan', dicek:'Perlu dicek', selesai:'Selesai', ditolak:'Ditolak'};
@@ -6214,6 +6333,35 @@ async function renderAbout(){
     <div class="small" style="max-width:640px;margin-bottom:10px">Ruang kerja kreator AI dan client: bangun talent, produksi konten, kelola project, kolaborasi, dan etalase portfolio. Aplikasi masih versi uji coba lokal, semua data tersimpan di browser ini.</div>
     ${row('Versi', escHtml(APP_VERSION))}${row('Build', escHtml(APP_BUILD))}${row('Lokasi aplikasi', escHtml(location.href.replace(/index\.html.*$/,'')))}${row('Data di lokasi ini', chars.length+' karakter · '+assets.length+' aset')}${row('Penyimpanan permanen', persisted===null?'tidak diketahui':(persisted?'Aktif':'Belum aktif'))}${row('Cadangan terakhir', m.lastAt?new Date(m.lastAt).toLocaleString():'Belum pernah')}
 </div>`;
+  try{ cloudAbout(el); }catch(e){ console.error(e); }
+}
+const ADM_LBL = {status:{active:'Aktif',pending:'Menunggu',suspended:'Ditangguhkan'}, tier:{gratis:'Gratis',pro:'Pro'}, kind:{klien:'Klien',kreator:'Kreator'}};
+async function renderAdmin(){
+  const el = document.getElementById('settingsAdminBody'); if(!el) return;
+  el.innerHTML = '<div class="small">Memuat akun…</div>';
+  let r; try{ r = await cloudApi('/api/admin'); }catch(e){ el.innerHTML = '<div class="small">Tidak bisa terhubung ke server.</div>'; return; }
+  if(r.status!==200){ el.innerHTML = '<div class="small">'+escHtml((r.json&&r.json.error)||'Gagal memuat.')+'</div>'; return; }
+  const users = r.json.users, pend = users.filter(u=>u.status==='pending').length;
+  const sel = (f, v, id)=>`<select data-f="${f}" data-id="${id}" style="width:auto;font-size:12px;padding:4px 6px">${Object.keys(ADM_LBL[f]).map(k=>`<option value="${k}"${k===v?' selected':''}>${ADM_LBL[f][k]}</option>`).join('')}</select>`;
+  el.innerHTML = `<div class="card" style="padding:14px"><h3 style="font-size:15px;margin-bottom:4px;color:var(--warn)">Halaman Admin</h3>
+    <div class="small" style="margin-bottom:10px">${users.length} akun · ${pend?pend+' menunggu persetujuan':'tidak ada yang menunggu'}. Batas karakter kosong = bawaan tier (Gratis 1, Pro 5).</div>
+    <div id="admMsg" class="small" style="min-height:16px;margin-bottom:6px"></div>
+    <div style="display:flex;flex-direction:column;gap:8px">${users.map(u=>u.role==='owner'?`<div style="display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:9px;font-size:13px"><div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis">${escHtml(u.email)}</div><div class="small">${escHtml(u.name||'')} · admin (owner)</div></div></div>`:`<div data-row="${u.id}" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1px solid ${u.status==='pending'?'var(--warn)':'var(--border)'};border-radius:9px;font-size:13px">
+      <div style="flex:1;min-width:180px"><div style="word-break:break-all">${escHtml(u.email)}</div><div class="small">${escHtml(u.name||'—')} · ${new Date(u.createdAt).toLocaleDateString('id-ID')}</div></div>
+      ${sel('kind',u.kind,u.id)}${sel('status',u.status,u.id)}${sel('tier',u.tier,u.id)}
+      <input data-f="charLimit" data-id="${u.id}" type="number" min="0" max="1000" placeholder="karakter" value="${u.charLimit==null?'':u.charLimit}" style="width:80px;font-size:12px;padding:4px 6px">
+      ${u.status==='pending'?`<button data-ok="${u.id}" class="primary" style="font-size:12px;padding:4px 10px">Setujui</button>`:''}</div>`).join('')}</div></div>`;
+  const msg = (t)=>{ const m = el.querySelector('#admMsg'); if(m) m.textContent = t; };
+  const save = async (id, patch)=>{
+    msg('Menyimpan…'); const x = await cloudApi('/api/admin', {method:'POST', body:Object.assign({id}, patch)});
+    if(x.status===200){ msg('Tersimpan.'); if(patch.status==='active') renderAdmin(); } else msg((x.json&&x.json.error)||'Gagal menyimpan.');
+  };
+  el.querySelectorAll('[data-f]').forEach(inp=>{ inp.onchange = ()=>{
+    const f = inp.dataset.f; let v = inp.value;
+    if(f==='charLimit') v = v===''?null:Number(v);
+    save(inp.dataset.id, {[f]:v});
+  }; });
+  el.querySelectorAll('[data-ok]').forEach(b=>{ b.onclick = ()=>save(b.dataset.ok, {status:'active'}); });
 }
 function renderSettingsView(){
   const el = document.getElementById('v-settings'); if(!el) return;
@@ -6241,12 +6389,135 @@ function renderSettingsView(){
     });
     el.dataset.built = '1';
   }
+  if(CLOUD.on && CLOUD.user && CLOUD.user.role==='owner' && !document.getElementById('settingsAdminBody')){
+    const tab = document.createElement('div'); tab.className = 'subtab'; tab.dataset.sub = 'settingsAdminBody'; tab.textContent = 'Halaman Admin';
+    el.querySelector('.subtabs').appendChild(tab);
+    const body = document.createElement('div'); body.id = 'settingsAdminBody'; body.className = 'subview'; el.appendChild(body);
+    tab.onclick = ()=>{
+      el.querySelectorAll('.subtab').forEach(x=>x.classList.remove('on')); el.querySelectorAll('.subview').forEach(x=>x.classList.remove('on'));
+      tab.classList.add('on'); body.classList.add('on'); renderAdmin();
+    };
+  }
   renderSettings();
 }
 
 /* ================= INIT: cek draft untuk resume ================= */
 function draftSameAsSaved(d,c){ try{ const k=(x)=>JSON.stringify([x.basic||{},x.traits||{},x.bible||'',x.masterAssetId||null,x.sourcePhotoAssetId||null,x.bodySheetAssetId||null,x.expressionSheetAssetId||null,x.voiceAssetId||null]); return k(d)===k(c); }catch(e){ return false; } }
+
+/* ================= AKUN & SINKRON KONFIGURASI (backend Vercel + Neon) =================
+   Aktif hanya bila aplikasi dibuka lewat http(s) dan /api/me menjawab. Di file:// atau host statis tanpa API,
+   aplikasi tetap berjalan lokal seperti biasa. Yang disinkronkan: API key, pengaturan penyedia, rantai cadangan,
+   model, penyedia kustom. Data karakter dan aset menyusul bersama penyimpanan file (R2). */
+const CFG_SYNC_KEYS = ['cf_keys','cf_settings','cf_chains','cf_models','cf_custom','cf_gendef'];
+const CLOUD = {on:false, user:null, pushT:null, last:0, err:''};
+function cfgTouched(k){
+  if(!CLOUD.on || (CFG_SYNC_KEYS.indexOf(k)<0 && k!=='profile')) return;
+  try{ localStorage.setItem('ak_cfg_ts', String(Date.now())); }catch(e){}
+  clearTimeout(CLOUD.pushT); CLOUD.pushT = setTimeout(cloudPushCfg, 1500);
+}
+async function cloudApi(path, opt){
+  opt = opt||{}; const h = {'Accept':'application/json'}; const m = opt.method||'GET';
+  if(m!=='GET'){ h['X-AK']='1'; h['Content-Type']='application/json'; }
+  const ctl = new AbortController(); const tm = setTimeout(()=>ctl.abort(), opt.timeout||8000);
+  try{
+    const r = await fetch(path, {method:m, headers:h, body:opt.body?JSON.stringify(opt.body):undefined, credentials:'same-origin', signal:ctl.signal});
+    const ct = r.headers.get('content-type')||''; let j = null;
+    if(ct.indexOf('json')>=0){ try{ j = await r.json(); }catch(e){} }
+    return {status:r.status, json:j, isApi: ct.indexOf('json')>=0};
+  } finally { clearTimeout(tm); }
+}
+async function cfgBundle(){ const d = {}; CFG_SYNC_KEYS.forEach(k=>{ const v = localStorage.getItem(k); if(v!==null) d[k] = v; }); const b = {ts:Number(localStorage.getItem('ak_cfg_ts'))||0, data:d};
+  try{ const up = await idbGet('drafts','user-profile'); if(up){ const o = Object.assign({}, up); delete o.avatarId; b.profile = o; } }catch(e){}   // foto profil menyusul bersama R2
+  return b; }
+async function cloudPushCfg(){
+  if(!CLOUD.on) return;
+  try{
+    const b = await cfgBundle(); if(!b.ts) b.ts = Date.now();
+    const r = await cloudApi('/api/keys', {method:'PUT', body:{provider:'config', value:b}});
+    if(r.status===200){ CLOUD.last = Date.now(); CLOUD.err = ''; } else CLOUD.err = (r.json&&r.json.error)||('HTTP '+r.status);
+  }catch(e){ CLOUD.err = 'tidak terhubung'; }
+}
+/* tarik konfigurasi dari server; true bila halaman perlu dimuat ulang karena konfigurasi lokal diganti */
+async function cloudPullCfg(){
+  const r = await cloudApi('/api/keys?reveal=1'); if(r.status!==200 || !r.json) return false;
+  const srv = r.json.keys && r.json.keys.config; const localTs = Number(localStorage.getItem('ak_cfg_ts'))||0;
+  if(srv && srv.data && srv.ts > localTs){
+    CFG_SYNC_KEYS.forEach(k=>{ try{ if(srv.data[k]!==undefined) localStorage.setItem(k, srv.data[k]); else localStorage.removeItem(k); }catch(e){} });
+    try{ localStorage.setItem('ak_cfg_ts', String(srv.ts)); }catch(e){}
+    if(srv.profile){ try{ const cur = (await idbGet('drafts','user-profile')) || {}; await idbPut('drafts', Object.assign({}, cur, srv.profile, {id:'user-profile', avatarId: cur.avatarId||null})); }catch(e){ console.error(e); } }
+    try{ localStorage.setItem('ak_cfg_ts', String(srv.ts)); }catch(e){} clearTimeout(CLOUD.pushT);   // tulis profil tadi tidak dihitung sebagai perubahan lokal
+    CLOUD.last = Date.now(); return true;
+  }
+  const hasLocal = CFG_SYNC_KEYS.some(k=>localStorage.getItem(k)!==null) || !!(await idbGet('drafts','user-profile'));
+  if(hasLocal && (!srv || localTs>srv.ts)){ if(!localTs) try{ localStorage.setItem('ak_cfg_ts', String(Date.now())); }catch(e){} await cloudPushCfg(); }
+  else CLOUD.last = Date.now();
+  return false;
+}
+function cloudLoginUi(){
+  return new Promise((resolve)=>{
+    const bg = document.createElement('div'); bg.id = 'cloudLogin';
+    bg.style.cssText = 'position:fixed;inset:0;z-index:200;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:16px';
+    let mode = 'login';
+    const draw = (err)=>{
+      const reg = mode==='register';
+      bg.innerHTML = `<div style="width:100%;max-width:380px"><div style="text-align:center;margin-bottom:18px"><div style="font-size:24px;color:var(--warn)">AK Talent</div><div class="small" style="margin-top:4px">${reg?'Buat akun baru':'Masuk untuk melanjutkan'}</div></div>
+        <div class="card" style="padding:16px">
+          ${reg?'<label style="font-size:12px;color:var(--text2)">Nama</label><input id="clN" autocomplete="name" style="width:100%;margin:4px 0 10px">':''}
+          <label style="font-size:12px;color:var(--text2)">Email</label><input id="clE" type="email" autocomplete="email" style="width:100%;margin:4px 0 10px">
+          <label style="font-size:12px;color:var(--text2)">Kata sandi${reg?' (minimal 10 karakter)':''}</label><input id="clP" type="password" autocomplete="${reg?'new-password':'current-password'}" style="width:100%;margin:4px 0 10px">
+          ${reg?'<label style="font-size:12px;color:var(--text2)">Daftar sebagai</label><select id="clK" style="width:100%;margin:4px 0 4px"><option value="klien">Klien (langsung aktif)</option><option value="kreator">Kreator (disetujui admin)</option></select><div class="small" style="margin-bottom:10px">Klien mencari dan menghubungi talent. Kreator membangun talent dan produksi konten.</div><label style="font-size:12px;color:var(--text2)">Kode undangan (opsional, dari admin)</label><input id="clI" style="width:100%;margin:4px 0 10px" placeholder="AK-XXXXXXXXXX">':''}
+          <div id="clErr" style="color:var(--bad);font-size:12.5px;min-height:18px;margin-bottom:8px">${err?escHtml(err):''}</div>
+          <button class="primary" id="clGo" style="width:100%">${reg?'Daftar':'Masuk'}</button>
+          <div style="text-align:center;margin-top:12px"><a href="#" id="clSw" style="font-size:12.5px;color:var(--text2)">${reg?'Sudah punya akun? Masuk':'Belum punya akun? Daftar'}</a></div>
+        </div></div>`;
+      const go = async ()=>{
+        const btn = bg.querySelector('#clGo'); btn.disabled = true; const t0 = btn.textContent; btn.textContent = 'Memproses...';
+        const body = {email:bg.querySelector('#clE').value, password:bg.querySelector('#clP').value};
+        if(reg){ body.name = bg.querySelector('#clN').value; body.invite = bg.querySelector('#clI').value; body.kind = bg.querySelector('#clK').value; }
+        try{
+          const r = await cloudApi(reg?'/api/register':'/api/login', {method:'POST', body});
+          if(r.status===200 || r.status===201){
+            const u = r.json.user;
+            if(u.status==='pending'){ bg.innerHTML = `<div style="width:100%;max-width:380px;text-align:center"><div style="font-size:20px;color:var(--warn);margin-bottom:10px">Pendaftaran diterima</div><div class="card" style="padding:16px"><div class="small" style="margin-bottom:14px;line-height:1.6">Akun kreator menunggu persetujuan admin. Sementara itu aplikasi tetap bisa dipakai di browser ini. Fitur akun aktif setelah disetujui, cukup masuk lagi nanti.</div><button class="primary" id="clOk" style="width:100%">Lanjut</button></div></div>`; bg.querySelector('#clOk').onclick = ()=>{ bg.remove(); resolve(u); }; return; }
+            bg.remove(); resolve(u); return; }
+          draw((r.json&&r.json.error)||('Gagal (HTTP '+r.status+').'));
+        }catch(e){ draw('Tidak bisa terhubung ke server.'); }
+      };
+      bg.querySelector('#clGo').onclick = go;
+      bg.querySelectorAll('input').forEach(i=>i.onkeydown = (e)=>{ if(e.key==='Enter') go(); });
+      bg.querySelector('#clSw').onclick = (e)=>{ e.preventDefault(); mode = reg?'login':'register'; draw(''); };
+      const f = bg.querySelector(reg?'#clN':'#clE'); if(f) f.focus();
+    };
+    document.body.appendChild(bg); draw('');
+  });
+}
+async function cloudInit(){
+  if(!/^https?:$/.test(location.protocol)) return;
+  let r; try{ r = await cloudApi('/api/me'); }catch(e){ return; }
+  if(!r.isApi || (r.status!==200 && r.status!==401)) return;   // host statis tanpa API: tetap mode lokal
+  CLOUD.on = true;
+  if(r.status===200){ CLOUD.user = r.json.user; } else { CLOUD.user = await cloudLoginUi(); }
+  if(await cloudPullCfg()){ location.reload(); await new Promise(()=>{}); }
+}
+async function cloudLogout(){
+  try{ await cloudApi('/api/logout', {method:'POST', body:{}}); }catch(e){}
+  CFG_SYNC_KEYS.concat(['ak_cfg_ts']).forEach(k=>{ try{ localStorage.removeItem(k); }catch(e){} });   // key tidak tertinggal di komputer ini
+  location.reload();
+}
+function cloudAbout(el){
+  if(!CLOUD.on || !CLOUD.user) return;
+  const u = CLOUD.user, row = (k,v)=>`<div style="display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-top:1px solid var(--border);font-size:13px"><span style="color:var(--text2)">${k}</span><span style="text-align:right;word-break:break-all">${v}</span></div>`;
+  const d = document.createElement('div'); d.className = 'card'; d.style.marginTop = '12px';
+  d.innerHTML = `<h3 style="font-size:15px;margin-bottom:8px">Akun</h3>${row('Email', escHtml(u.email))}${row('Peran', u.role==='owner'?'Admin (owner)':(u.kind==='kreator'?'Kreator · '+(u.tier==='pro'?'Pro':'Gratis'):'Klien'))}${row('Status', ({active:'Aktif',pending:'Menunggu persetujuan admin',suspended:'Ditangguhkan'})[u.status]||escHtml(u.status||''))}${row('Sinkron kunci dan pengaturan', CLOUD.err?('<span style="color:var(--bad)">'+escHtml(CLOUD.err)+'</span>'):(CLOUD.last?'Terakhir '+new Date(CLOUD.last).toLocaleTimeString('id-ID'):'Siap'))}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button id="clSync">Sinkron sekarang</button>${u.role==='owner'?'<button id="clInv">Buat kode undangan</button>':''}<button id="clOut">Keluar</button></div><div id="clMsg" class="small" style="margin-top:8px"></div>`;
+  el.appendChild(d);
+  const msg = (t)=>{ d.querySelector('#clMsg').textContent = t; };
+  d.querySelector('#clSync').onclick = async ()=>{ msg('Menyinkron…'); localStorage.setItem('ak_cfg_ts', String(Date.now())); await cloudPushCfg(); msg(CLOUD.err||'Tersimpan di server.'); };
+  d.querySelector('#clOut').onclick = ()=>{ if(confirm('Keluar dari akun? API key dihapus dari browser ini (tetap aman di server) dan kembali setelah masuk lagi.')) cloudLogout(); };
+  const inv = d.querySelector('#clInv'); if(inv) inv.onclick = async ()=>{ const r = await cloudApi('/api/invites', {method:'POST', body:{}}); msg(r.status===201 ? 'Kode undangan (berlaku 7 hari, sekali pakai): '+r.json.code : ((r.json&&r.json.error)||'Gagal.')); };
+}
 async function initApp(){
+  try{ await cloudInit(); }catch(e){ console.error(e); }
   try{ krAbsorbOld(); }catch(e){ console.error(e); }
   renderBuild(); renderSettingsView();
   await applyRole();

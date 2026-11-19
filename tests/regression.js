@@ -135,6 +135,133 @@ const wait = (ms) => page.waitForTimeout(ms);
     const r = await page.evaluate(async () => { const o = await tlExportFile(() => {}, { vcodec: 'vp09.00.10.08', acodec: 'opus' }); if (typeof o === 'string') return o; const u8 = new Uint8Array(await o.blob.arrayBuffer()); return [o.blob.type, o.blob.size > 2000, String.fromCharCode(...u8.slice(4, 8)), o.duration]; });
     ok(r !== 'unsupported', 'WebCodecs tidak tersedia di browser uji'); eq(r, ['video/mp4', true, 'ftyp', 2]); });
 
+  console.log('\nKamera sinematik');
+  await t('camPrompt merangkai kalimat & kosong jika tidak dipilih', async () => {
+    const r = await page.evaluate(() => [camPrompt({}), camPrompt({ camera: CAM_OPTS.camera[1][0][0], move: CAM_OPTS.move[1][1][0] })]);
+    eq(r[0], ''); ok(/^Cinematic camera setup: Modular 8K/.test(r[1]) && /dolly/.test(r[1]), r[1]); });
+  await t('prompt film memuat setelan kamera', async () => {
+    const r = await page.evaluate(() => { const f = filmNew(); f.cam = { lens: CAM_OPTS.lens[1][0][0], aperture: CAM_OPTS.aperture[1][0][0] }; f.clips[0].prompt = 'Adegan uji'; const a = filmPrompt(f, 0, [], []); f.cam = {}; return [/anamorphic/.test(a), /f\/1\.4/.test(a), /Cinematic camera setup/.test(filmPrompt(f, 0, [], []))]; }); eq(r, [true, true, false]); });
+  await t('prompt foto memuat setelan kamera & menandai penggantian kamera lama', async () => {
+    const r = await page.evaluate(async () => { const c = (await idbGetAll('characters'))[0]; return studioPhotoPrompt(c, 1, 1, { cam: { focal: CAM_OPTS.focal[1][4][0] } }); }); ok(/50mm portrait/.test(r) && /menggantikan arahan kamera/.test(r), r.slice(-300)); });
+  await t('UI kamera sinematik tampil di Studio Foto dan Film', async () => {
+    await page.evaluate(() => { studioState.mode = 'photo'; setActiveView('v-studio'); }); await wait(900); ok(await page.$('#v-studio select[data-cam="lens"]'), 'foto');
+    await page.evaluate(() => { studioState.mode = 'film'; renderStudio(); }); await wait(900); ok(await page.$('#v-studio select[data-cam="move"]'), 'film'); });
+
+  console.log('\nSeedance');
+  await t('seedanceInput: frame awal & mode lanjut', async () => {
+    const r = await page.evaluate(async () => { const old = kieUpload; kieUpload = async (k, d) => 'u:' + String(d).slice(0, 10);
+      const a = await seedanceInput('k', 'bytedance/seedance-2-5', { prompt: 'x', src: 'data:image/png;base64,AA', dur: 10, sound: true, ar: '9:16', res: '360p' });
+      const b = await seedanceInput('k', 'bytedance/seedance-2-5', { prompt: 'y', extendSrc: 'data:video/mp4;base64,AA', dur: 8, sound: true, res: '720p' });
+      let e = ''; try { await seedanceInput('k', 'bytedance/seedance-2', { prompt: 'z', extendSrc: 'data:video/mp4;base64,AA', dur: 5 }); } catch (x) { e = x.message; }
+      kieUpload = old; return [a, b, e]; });
+    eq(r[0].resolution, '480p'); eq(r[0].generate_audio, true); ok(r[0].first_frame_url && r[0].aspect_ratio === '9:16');
+    eq(r[1].omni_reference_task_type, 'extend'); eq(r[1].aspect_ratio, 'adaptive'); eq(r[1].reference_video_urls.length, 1); ok(/Seedance 2\.5/.test(r[2])); });
+  await t('UI Film: pilihan model Seedance & tombol lanjutkan', async () => {
+    const r = await page.evaluate(async () => { studioState.mode = 'film'; renderStudio(); await new Promise(r => setTimeout(r, 900)); return !!document.querySelector('#fVm option[value="bytedance/seedance-2-5"]'); }); ok(r); });
+
+  console.log('\nAlat foto');
+  await t('photoTool membuat aset baru dari foto (Kie di-stub) tanpa mengubah aslinya', async () => {
+    const r = await page.evaluate(async (ids) => {
+      const kieU = kieUpload, kieJ = callKieJob, wk = withKeyRotation; const calls = [];
+      kieUpload = async () => 'https://x/y.png'; callKieJob = async (c, k, model, input) => { calls.push([model, input]); const cv = document.createElement('canvas'); cv.width = 20; cv.height = 20; return await new Promise(r => cv.toBlob(r)); }; withKeyRotation = async (id, fn) => fn('K', {});
+      const n0 = (await idbGetAll('assets')).length; const nid = await photoTool(ids[0], 'up4'); const nid2 = await photoTool(ids[0], 'bg');
+      kieUpload = kieU; callKieJob = kieJ; withKeyRotation = wk;
+      const a = await idbGet('assets', nid); return [(await idbGetAll('assets')).length - n0, calls[0][0], calls[0][1].upscale_factor, calls[1][0], !!calls[1][1].image, a.meta.sourceAssetIds[0] === ids[0], /4x/.test(a.meta.title)]; }, ids);
+    eq(r, [2, 'topaz/image-upscale', '4', 'recraft/remove-background', true, true, true]); });
+
+  await t('photoTool: perluas rasio & ganti outfit memanggil model yang benar', async () => {
+    const r = await page.evaluate(async (ids) => {
+      const kieU = kieUpload, kieJ = callKieJob, wk = withKeyRotation; const calls = [];
+      kieUpload = async (k, d) => 'https://x/' + String(d).slice(-3); callKieJob = async (c, k, model, input) => { calls.push([model, input]); const cv = document.createElement('canvas'); cv.width = 20; cv.height = 20; return await new Promise(r => cv.toBlob(r)); }; withKeyRotation = async (p, fn) => fn('k', getCfg('kie'));
+      const n1 = await photoTool(ids[0], 'rf', null, { size: 'landscape_16_9' }); const n2 = await photoTool(ids[0], 'tryon', null, { garment: 'data:image/png;base64,ZZZ' });
+      kieUpload = kieU; callKieJob = kieJ; withKeyRotation = wk;
+      return [!!n1, !!n2, calls[0][0], calls[0][1].image_size, /nano-banana-edit/.test(calls[1][0]), calls[1][1].image_urls.length, /garment/.test(calls[1][1].prompt)]; }, ids);
+    eq(r, [true, true, 'ideogram/v3-reframe', 'landscape_16_9', true, 2, true]); });
+  await t('UI detail aset: tombol Perluas rasio & Ganti outfit', async () => {
+    const r = await page.evaluate(async (ids) => { showAssetDetail(ids[0]); await new Promise(r => setTimeout(r, 700)); const o = [!!document.querySelector('#dRf'), !!document.querySelector('#dTry'), !!document.querySelector('#dRfS')]; document.querySelector('#dClose').click(); return o; }, ids);
+    eq(r, [true, true, true]); });
+
+  console.log('\nAlat video');
+  await t('videoTool memanggil model Kie yang benar (stub)', async () => {
+    const r = await page.evaluate(async () => {
+      const kieU = kieUpload, kieJ = callKieJob, wk = withKeyRotation, calls = [];
+      const cv = document.createElement('canvas'); cv.width = 20; cv.height = 20; const vb = await new Promise(r => cv.toBlob(r));
+      const vid = await putAsset(vb, { type: 'studio_video', title: 'V uji', status: 'draft' });
+      kieUpload = async (k, d) => 'https://x/' + calls.length; callKieJob = async (c, k, model, input) => { calls.push([model, input]); return vb; }; withKeyRotation = async (p, fn) => fn('k', getCfg('kie'));
+      const a = await videoTool(vid, 'motion', null, 'data:image/png;base64,AA'), b = await videoTool(vid, 'replace', null, 'data:image/png;base64,AA'), c = await videoTool(vid, 'lipsync', null, 'data:audio/mpeg;base64,AA');
+      kieUpload = kieU; callKieJob = kieJ; withKeyRotation = wk;
+      return [!!a && !!b && !!c, calls.map(x => x[0]), Object.keys(calls[0][1]).sort().join()]; });
+    eq(r[0], true); eq(r[1], ['kling-3.0/motion-control', 'wan/2-2-animate-replace', 'volcengine/video-to-video-lip-sync']); ok(/input_urls/.test(r[2]) && /video_urls/.test(r[2])); });
+  await t('tombol Cari highlight ada di Editor', async () => {
+    const r = await page.evaluate(async () => { setActiveView('v-export'); await new Promise(r => setTimeout(r, 900)); return !!document.querySelector('#tHl'); }); ok(r); });
+
+  console.log('\nAkun & sinkron konfigurasi (server tiruan)');
+  await t('tanpa API: aplikasi tetap lokal, tanpa layar login', async () => {
+    const r = await page.evaluate(() => [CLOUD.on, !!document.getElementById('cloudLogin')]); eq(r, [false, false]); });
+  await t('login, tarik konfigurasi dari server, dorong perubahan, keluar', async () => {
+    const ctx2 = await browser.newContext({ viewport: { width: 1366, height: 900 } }); const p2 = await ctx2.newPage(); const e2 = []; p2.on('pageerror', e => e2.push(e.message)); p2.on('dialog', d => d.accept());
+    let loggedIn = false; const puts = []; const J = (route, status, body) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    const cfg = { ts: 5000000000000, profile: { id: 'user-profile', displayName: 'Husein Uji', accountType: 'Kreator', role: 'Owner' }, data: { cf_keys: JSON.stringify([{ id: 'k1', provider: 'kie', label: 'Kie', model: '', key: 'KIE-SERVER-KEY', status: 'active', limitUntil: 0 }]) } };
+    await p2.route('**/api/**', async (route) => { const u = new URL(route.request().url()), m = route.request().method();
+      if (u.pathname === '/api/me') return loggedIn ? J(route, 200, { user: { id: 'u1', email: 'a@b.co', name: 'A', role: 'owner' } }) : J(route, 401, { error: 'Belum masuk.' });
+      if (u.pathname === '/api/login') { const b = JSON.parse(route.request().postData()); if (b.password !== 'kata-sandi-benar') return J(route, 401, { error: 'Email atau kata sandi salah.' }); loggedIn = true; return J(route, 200, { user: { id: 'u1', email: 'a@b.co', name: 'A', role: 'owner' } }); }
+      if (u.pathname === '/api/keys' && m === 'GET') return J(route, 200, { keys: { config: cfg } });
+      if (u.pathname === '/api/keys' && m === 'PUT') { puts.push(JSON.parse(route.request().postData())); return J(route, 200, { ok: true }); }
+      if (u.pathname === '/api/logout') { loggedIn = false; return J(route, 200, { ok: true }); }
+      return J(route, 404, { error: 'x' }); });
+    await p2.goto(url); await p2.waitForSelector('#cloudLogin', { timeout: 8000 });
+    await p2.fill('#clE', 'a@b.co'); await p2.fill('#clP', 'salah-salah-1'); await p2.click('#clGo'); await p2.waitForFunction(() => /salah/i.test(document.getElementById('clErr').textContent), null, { timeout: 5000 });
+    await p2.fill('#clP', 'kata-sandi-benar'); await p2.click('#clGo');
+    await p2.waitForFunction(() => !document.getElementById('cloudLogin') && typeof CLOUD !== 'undefined' && CLOUD.on && !!CLOUD.user && typeof KEYREG !== 'undefined' && KEYREG.some(k => k.key === 'KIE-SERVER-KEY'), null, { timeout: 10000 });
+    eq(await p2.evaluate(() => CLOUD.on && CLOUD.user.email), 'a@b.co');
+    eq(await p2.evaluate(async () => (await upGet()).displayName), 'Husein Uji', 'profil dari server dipakai');
+    puts.length = 0;
+    await p2.evaluate(async () => { const u = await upGet(); u.displayName = 'Nama Baru'; await idbPut('drafts', u); });
+    for (let i = 0; i < 30 && !puts.some(x => /Nama Baru/.test(JSON.stringify(x))); i++) await p2.waitForTimeout(300);
+    ok(puts.some(x => x.value && x.value.profile && x.value.profile.displayName === 'Nama Baru' && x.value.profile.avatarId === undefined), 'perubahan profil terdorong ke server tanpa foto');
+    await p2.evaluate(() => { KEYREG.push({ id: 'k2', provider: 'groq', label: 'Groq', model: '', key: 'GROQ-NEW', status: 'active', limitUntil: 0 }); krSave(); });
+    for (let i = 0; i < 30 && !puts.some(x => /GROQ-NEW/.test(JSON.stringify(x))); i++) await p2.waitForTimeout(300);
+    ok(puts.length >= 1 && puts[puts.length - 1].provider === 'config' && /GROQ-NEW/.test(puts[puts.length - 1].value.data.cf_keys), 'perubahan key harus terdorong ke server');
+    await p2.evaluate(() => { setActiveView('v-settings'); }); await p2.waitForTimeout(500);
+    await p2.evaluate(() => { const b = [...document.querySelectorAll('#v-settings .subtab')].find(x => /Tentang/.test(x.textContent)); if (b) b.click(); }); await p2.waitForTimeout(900);
+    ok(await p2.evaluate(() => !!document.getElementById('clOut') && !!document.getElementById('clInv')), 'kartu akun (owner) tampil di Tentang');
+    await p2.evaluate(() => { document.getElementById('clOut').click(); }); await p2.waitForSelector('#cloudLogin', { timeout: 8000 });
+    eq(await p2.evaluate(() => localStorage.getItem('cf_keys')), null, 'key lokal dihapus saat keluar');
+    ok(e2.length === 0, 'galat halaman: ' + e2.join(' | ')); await ctx2.close(); });
+
+  await t('daftar kreator: layar menunggu persetujuan', async () => {
+    const ctx3 = await browser.newContext({ viewport: { width: 1366, height: 900 } }); const p3 = await ctx3.newPage(); const e3 = []; p3.on('pageerror', e => e3.push(e.message));
+    const J = (route, status, body) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }); let reg = null;
+    await p3.route('**/api/**', async (route) => { const u = new URL(route.request().url());
+      if (u.pathname === '/api/me') return J(route, reg ? 200 : 401, reg ? { user: reg } : { error: 'x' });
+      if (u.pathname === '/api/register') { const b = JSON.parse(route.request().postData()); reg = { id: 'u9', email: b.email, name: b.name, role: 'member', kind: b.kind, status: b.kind === 'kreator' ? 'pending' : 'active', tier: 'gratis', can: {} }; return J(route, 201, { user: reg }); }
+      if (u.pathname === '/api/keys') return J(route, 200, { keys: {} });
+      return J(route, 404, { error: 'x' }); });
+    await p3.goto(url); await p3.waitForSelector('#cloudLogin', { timeout: 8000 });
+    await p3.click('#clSw'); await p3.waitForSelector('#clK');
+    await p3.fill('#clE', 'c@x.co'); await p3.fill('#clP', 'kata-sandi-panjang'); await p3.selectOption('#clK', 'kreator'); await p3.click('#clGo');
+    await p3.waitForSelector('#clOk', { timeout: 5000 }); ok(await p3.evaluate(() => /menunggu persetujuan/i.test(document.getElementById('cloudLogin').textContent)), 'pesan menunggu persetujuan');
+    await p3.click('#clOk'); await p3.waitForFunction(() => !document.getElementById('cloudLogin') && CLOUD.user && CLOUD.user.status === 'pending', null, { timeout: 8000 });
+    ok(e3.length === 0, 'galat halaman: ' + e3.join(' | ')); await ctx3.close(); });
+  await t('Halaman Admin: daftar akun, setujui kreator, ubah tier', async () => {
+    const ctx4 = await browser.newContext({ viewport: { width: 1366, height: 900 } }); const p4 = await ctx4.newPage(); const e4 = []; p4.on('pageerror', e => e4.push(e.message));
+    const J = (route, status, body) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }); const posts = [];
+    const users = [{ id: 'o', email: 'own@x.co', name: 'Own', role: 'owner', kind: 'kreator', status: 'active', tier: 'pro', charLimit: null, createdAt: 1 }, { id: 'c1', email: 'kre@x.co', name: 'Kre', role: 'member', kind: 'kreator', status: 'pending', tier: 'gratis', charLimit: null, createdAt: 2 }];
+    await p4.route('**/api/**', async (route) => { const u = new URL(route.request().url()), m = route.request().method();
+      if (u.pathname === '/api/me') return J(route, 200, { user: { id: 'o', email: 'own@x.co', name: 'Own', role: 'owner', kind: 'kreator', status: 'active', tier: 'pro', can: { admin: true } } });
+      if (u.pathname === '/api/keys') return J(route, 200, { keys: {} });
+      if (u.pathname === '/api/admin' && m === 'GET') return J(route, 200, { users });
+      if (u.pathname === '/api/admin' && m === 'POST') { const b = JSON.parse(route.request().postData()); posts.push(b); Object.assign(users[1], b); return J(route, 200, { ok: true }); }
+      return J(route, 404, { error: 'x' }); });
+    await p4.goto(url); await p4.waitForFunction(() => typeof CLOUD !== 'undefined' && CLOUD.user, null, { timeout: 8000 }); await p4.waitForTimeout(1500);
+    await p4.evaluate(() => setActiveView('v-settings')); await p4.waitForSelector('#v-settings .subtab[data-sub="settingsAdminBody"]', { timeout: 5000 });
+    await p4.click('#v-settings .subtab[data-sub="settingsAdminBody"]'); await p4.waitForSelector('[data-ok="c1"]', { timeout: 5000 });
+    await p4.click('[data-ok="c1"]'); await p4.waitForFunction(() => !document.querySelector('[data-ok="c1"]'), null, { timeout: 5000 });
+    eq(posts[0], { id: 'c1', status: 'active' }, 'persetujuan terkirim');
+    await p4.selectOption('select[data-f="tier"][data-id="c1"]', 'pro'); await p4.waitForTimeout(400); eq(posts[1], { id: 'c1', tier: 'pro' });
+    await p4.fill('input[data-f="charLimit"][data-id="c1"]', '8'); await p4.dispatchEvent('input[data-f="charLimit"][data-id="c1"]', 'change'); await p4.waitForTimeout(400); eq(posts[2], { id: 'c1', charLimit: 8 });
+    ok(e4.length === 0, 'galat halaman: ' + e4.join(' | ')); await ctx4.close(); });
+
   await clean(); await browser.close(); srv.close();
   const bad = results.filter(r => !r[1]); console.log('\n' + (results.length - bad.length) + '/' + results.length + ' lulus' + (bad.length ? ', ' + bad.length + ' gagal' : '')); process.exit(bad.length ? 1 : 0);
 })();
